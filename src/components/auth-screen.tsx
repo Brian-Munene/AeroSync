@@ -1,3 +1,4 @@
+
 import { auth, db } from '@/lib/firebase';
 import {
   createUserWithEmailAndPassword,
@@ -26,6 +27,7 @@ import {
 } from 'react-native';
 
 export type Role = 'pending' | 'handler' | 'supervisor';
+type RequestedRole = 'handler' | 'supervisor';
 
 export default function AuthScreen() {
   const [isRegistering, setIsRegistering] = useState(false);
@@ -33,6 +35,8 @@ export default function AuthScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [requestedRole, setRequestedRole] =
+    useState<RequestedRole>('handler');
   const [loading, setLoading] = useState(false);
 
   function showMessage(title: string, message: string) {
@@ -73,11 +77,13 @@ export default function AuthScreen() {
     setLoading(true);
 
     try {
+      // Existing users log in with their email and password.
       if (!isRegistering) {
         await signInWithEmailAndPassword(auth, cleanEmail, password);
         return;
       }
 
+      // Create the Firebase Authentication account.
       console.log('REGISTRATION: Creating Firebase Auth account...');
 
       const credential = await createUserWithEmailAndPassword(
@@ -93,10 +99,12 @@ export default function AuthScreen() {
 
       const userRef = doc(db, 'users', credential.user.uid);
 
+      // Every new account starts as pending.
       try {
         console.log('REGISTRATION: Saving Firestore profile...', {
           uid: credential.user.uid,
           email: cleanEmail,
+          requestedRole,
           projectId: db.app.options.projectId,
           collection: 'users',
         });
@@ -106,6 +114,7 @@ export default function AuthScreen() {
           email: cleanEmail,
           displayName: cleanName,
           role: 'pending' satisfies Role,
+          requestedRole,
           createdAt: serverTimestamp(),
         });
 
@@ -119,7 +128,7 @@ export default function AuthScreen() {
           profileError
         );
 
-        // Attempt to remove the Auth account if its required profile fails.
+        // Roll back the Auth account if its required profile cannot be saved.
         try {
           await deleteUser(credential.user);
           console.log('REGISTRATION: Auth account rollback succeeded.');
@@ -136,33 +145,46 @@ export default function AuthScreen() {
         throw profileError;
       }
 
+      // Set the display name in Firebase Authentication.
       try {
         await updateProfile(credential.user, {
           displayName: cleanName,
         });
       } catch (profileNameError) {
-        console.warn('Could not update Auth display name:', profileNameError);
+        console.warn(
+          'Could not update Auth display name:',
+          profileNameError
+        );
       }
 
-      showMessage(
-        'Account created',
-        'Your account is awaiting supervisor approval. Baggage access is unavailable until approval.'
-      );
+      const approvalMessage =
+        requestedRole === 'supervisor'
+          ? 'Your supervisor registration request has been submitted. Supervisor access requires separate authorization.'
+          : 'Your handler account is awaiting supervisor approval. Baggage access is unavailable until approval.';
+
+      showMessage('Account created', approvalMessage);
     } catch (error: any) {
       console.error('Authentication failed:', error);
 
       const messages: Record<string, string> = {
-        'auth/email-already-in-use': 'An account already uses this email.',
-        'auth/invalid-email': 'Enter a valid email address.',
-        'auth/invalid-credential': 'Email or password is incorrect.',
-        'auth/weak-password': 'Choose a stronger password.',
-        'auth/user-disabled': 'This account has been disabled.',
+        'auth/email-already-in-use':
+          'An account already uses this email.',
+        'auth/invalid-email':
+          'Enter a valid email address.',
+        'auth/invalid-credential':
+          'Email or password is incorrect.',
+        'auth/weak-password':
+          'Choose a stronger password.',
+        'auth/user-disabled':
+          'This account has been disabled.',
         'auth/too-many-requests':
           'Too many attempts. Wait a while before trying again.',
         'auth/network-request-failed':
           'Network error. Check your internet connection and try again.',
         'permission-denied':
-          'Your profile could not be created. Please try again or contact a supervisor.',
+          'Your profile could not be created. Please check the Firestore rules and try again.',
+        'firestore/permission-denied':
+          'Your profile could not be created. Please check the Firestore rules and try again.',
       };
 
       showMessage(
@@ -173,6 +195,11 @@ export default function AuthScreen() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function toggleMode() {
+    setIsRegistering((previous) => !previous);
+    setConfirmPassword('');
   }
 
   return (
@@ -195,16 +222,76 @@ export default function AuthScreen() {
             {isRegistering ? 'Create your account' : 'Welcome back'}
           </Text>
 
+          {/* Role selection is displayed only during registration. */}
           {isRegistering && (
-            <TextInput
-              style={styles.input}
-              placeholder="Full name"
-              placeholderTextColor="#94A3B8"
-              value={displayName}
-              onChangeText={setDisplayName}
-              autoCapitalize="words"
-              editable={!loading}
-            />
+            <>
+              <Text style={styles.roleHeading}>Register as</Text>
+
+              <View style={styles.roleOptions}>
+                <Pressable
+                  style={[
+                    styles.roleCard,
+                    requestedRole === 'handler' &&
+                      styles.roleCardSelected,
+                  ]}
+                  onPress={() => setRequestedRole('handler')}
+                  disabled={loading}
+                  accessibilityRole="radio"
+                  accessibilityState={{
+                    checked: requestedRole === 'handler',
+                  }}
+                >
+                  <Text style={styles.roleIcon}>🧳</Text>
+                  <Text style={styles.roleTitle}>Handler</Text>
+                  <Text style={styles.roleDescription}>
+                    Baggage handling and shift duties
+                  </Text>
+                  {requestedRole === 'handler' && (
+                    <Text style={styles.selectedText}>✓ Selected</Text>
+                  )}
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.roleCard,
+                    requestedRole === 'supervisor' &&
+                      styles.roleCardSelected,
+                  ]}
+                  onPress={() => setRequestedRole('supervisor')}
+                  disabled={loading}
+                  accessibilityRole="radio"
+                  accessibilityState={{
+                    checked: requestedRole === 'supervisor',
+                  }}
+                >
+                  <Text style={styles.roleIcon}>📋</Text>
+                  <Text style={styles.roleTitle}>Supervisor</Text>
+                  <Text style={styles.roleDescription}>
+                    Crew and operations management
+                  </Text>
+                  {requestedRole === 'supervisor' && (
+                    <Text style={styles.selectedText}>✓ Selected</Text>
+                  )}
+                </Pressable>
+              </View>
+
+              {requestedRole === 'supervisor' && (
+                <Text style={styles.roleNotice}>
+                  Supervisor access requires separate authorization.
+                  Selecting this option does not grant supervisor privileges.
+                </Text>
+              )}
+
+              <TextInput
+                style={styles.input}
+                placeholder="Full name"
+                placeholderTextColor="#94A3B8"
+                value={displayName}
+                onChangeText={setDisplayName}
+                autoCapitalize="words"
+                editable={!loading}
+              />
+            </>
           )}
 
           <TextInput
@@ -244,7 +331,10 @@ export default function AuthScreen() {
           )}
 
           <Pressable
-            style={[styles.primaryButton, loading && styles.disabled]}
+            style={[
+              styles.primaryButton,
+              loading && styles.disabled,
+            ]}
             onPress={handleSubmit}
             disabled={loading}
           >
@@ -258,7 +348,7 @@ export default function AuthScreen() {
           </Pressable>
 
           <Pressable
-            onPress={() => setIsRegistering(!isRegistering)}
+            onPress={toggleMode}
             disabled={loading}
             style={styles.switchButton}
           >
@@ -270,7 +360,7 @@ export default function AuthScreen() {
           </Pressable>
 
           <Text style={styles.notice}>
-            New accounts require supervisor approval before accessing operational
+            New accounts require authorization before accessing operational
             records.
           </Text>
         </View>
@@ -316,6 +406,55 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#172033',
     marginBottom: 4,
+  },
+  roleHeading: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#172033',
+    marginBottom: -4,
+  },
+  roleOptions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  roleCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+  },
+  roleCardSelected: {
+    borderColor: '#163B65',
+    borderWidth: 2,
+    backgroundColor: '#EFF6FF',
+  },
+  roleIcon: {
+    fontSize: 26,
+  },
+  roleTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#163B65',
+  },
+  roleDescription: {
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: 'center',
+    color: '#64748B',
+  },
+  selectedText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#163B65',
+  },
+  roleNotice: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#64748B',
   },
   input: {
     borderWidth: 1,
