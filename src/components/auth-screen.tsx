@@ -1,29 +1,28 @@
-
 import { auth, db } from '@/lib/firebase';
 import {
-    createUserWithEmailAndPassword,
-    deleteUser,
-    signInWithEmailAndPassword,
-    signOut,
-    updateProfile,
+  createUserWithEmailAndPassword,
+  deleteUser,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
 } from 'firebase/auth';
 import {
-    doc,
-    serverTimestamp,
-    setDoc,
+  doc,
+  serverTimestamp,
+  setDoc,
 } from 'firebase/firestore';
 import { useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 
 export type Role = 'pending' | 'handler' | 'supervisor';
@@ -79,16 +78,29 @@ export default function AuthScreen() {
         return;
       }
 
+      console.log('REGISTRATION: Creating Firebase Auth account...');
+
       const credential = await createUserWithEmailAndPassword(
         auth,
         cleanEmail,
         password
       );
 
+      console.log('REGISTRATION: Auth account created.', {
+        uid: credential.user.uid,
+        projectId: db.app.options.projectId,
+      });
+
       const userRef = doc(db, 'users', credential.user.uid);
 
       try {
-        // The Firestore profile is essential to the approval workflow.
+        console.log('REGISTRATION: Saving Firestore profile...', {
+          uid: credential.user.uid,
+          email: cleanEmail,
+          projectId: db.app.options.projectId,
+          collection: 'users',
+        });
+
         await setDoc(userRef, {
           uid: credential.user.uid,
           email: cleanEmail,
@@ -96,12 +108,24 @@ export default function AuthScreen() {
           role: 'pending' satisfies Role,
           createdAt: serverTimestamp(),
         });
+
+        console.log(
+          'REGISTRATION: Firestore profile saved successfully.',
+          credential.user.uid
+        );
       } catch (profileError) {
+        console.error(
+          'REGISTRATION: Firestore profile save FAILED:',
+          profileError
+        );
+
         // Attempt to remove the Auth account if its required profile fails.
         try {
           await deleteUser(credential.user);
+          console.log('REGISTRATION: Auth account rollback succeeded.');
         } catch (deleteError) {
           console.error('Account rollback failed:', deleteError);
+
           try {
             await signOut(auth);
           } catch (signOutError) {
@@ -112,7 +136,6 @@ export default function AuthScreen() {
         throw profileError;
       }
 
-      // Auth display name is useful, but not required for security.
       try {
         await updateProfile(credential.user, {
           displayName: cleanName,
@@ -163,6 +186,7 @@ export default function AuthScreen() {
       >
         <View style={styles.card}>
           <Text style={styles.brand}>AeroSync</Text>
+
           <Text style={styles.subtitle}>
             Ground crew coordination and baggage tracking
           </Text>
@@ -175,6 +199,7 @@ export default function AuthScreen() {
             <TextInput
               style={styles.input}
               placeholder="Full name"
+              placeholderTextColor="#94A3B8"
               value={displayName}
               onChangeText={setDisplayName}
               autoCapitalize="words"
@@ -185,6 +210,7 @@ export default function AuthScreen() {
           <TextInput
             style={styles.input}
             placeholder="Email address"
+            placeholderTextColor="#94A3B8"
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
@@ -196,6 +222,7 @@ export default function AuthScreen() {
           <TextInput
             style={styles.input}
             placeholder="Password"
+            placeholderTextColor="#94A3B8"
             value={password}
             onChangeText={setPassword}
             secureTextEntry
@@ -207,6 +234,7 @@ export default function AuthScreen() {
             <TextInput
               style={styles.input}
               placeholder="Confirm password"
+              placeholderTextColor="#94A3B8"
               value={confirmPassword}
               onChangeText={setConfirmPassword}
               secureTextEntry
