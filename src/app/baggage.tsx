@@ -1,33 +1,20 @@
-import { auth, db } from '@/lib/firebase';
-import {
-  cacheDirectory,
-  EncodingType,
-  writeAsStringAsync,
-} from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library/legacy';
+import { db } from '@/lib/firebase';
 import {
   collection,
-  doc,
   onSnapshot,
   orderBy,
   query,
-  serverTimestamp,
-  setDoc,
 } from 'firebase/firestore';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-import QRCode from 'react-native-qrcode-svg';
 
-import { buildQrPayload } from '@/features/baggage/qr';
-import { validateFlightNumber } from '@/features/baggage/validation';
+import RegisterBaggageScreen from '@/components/register-baggage-screen';
 
 type BaggageRecord = {
   id: string;
@@ -46,17 +33,8 @@ type BaggageScreenProps = {
 };
 
 export default function BaggageScreen({ onBack }: BaggageScreenProps) {
-  const [flightNumber, setFlightNumber] = useState('');
-  const [baggageReference, setBaggageReference] = useState('');
   const [records, setRecords] = useState<BaggageRecord[]>([]);
-  const [selectedRecord, setSelectedRecord] =
-    useState<BaggageRecord | null>(null);
-  const [savingQR, setSavingQR] = useState(false);
-  const [registering, setRegistering] = useState(false);
-
-  const qrCodeRef = useRef<{
-    toDataURL: (callback: (data: string) => void) => void;
-  } | null>(null);
+  const [showRegisterForm, setShowRegisterForm] = useState(false);
 
   useEffect(() => {
     const baggageQuery = query(
@@ -75,16 +53,6 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
         );
 
         setRecords(baggageRecords);
-
-        setSelectedRecord((current) => {
-          if (!current) {
-            return null;
-          }
-
-          return (
-            baggageRecords.find((record) => record.id === current.id) ?? null
-          );
-        });
       },
       (error) => {
         console.error('Error loading baggage records:', error);
@@ -94,170 +62,11 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
     return unsubscribe;
   }, []);
 
-  const registerBaggage = async () => {
-    if (registering) {
-      return;
-    }
-
-    const flightCheck = validateFlightNumber(flightNumber);
-    const reference = baggageReference.trim().toUpperCase();
-
-    if (!flightCheck.ok) {
-      Alert.alert('Invalid flight number', flightCheck.error);
-      return;
-    }
-
-    if (!reference) {
-      Alert.alert(
-        'Missing information',
-        'Please enter the baggage reference.',
-      );
-      return;
-    }
-
-    const flight = flightCheck.flight;
-
-    if (!auth.currentUser) {
-      Alert.alert('Not signed in', 'Please sign in again.');
-      return;
-    }
-
-    setRegistering(true);
-
-    try {
-      // Generate the ID first so the whole record is saved in one write.
-      const newRecord = doc(collection(db, 'BaggageRecords'));
-      const baggageId = `BAG-${newRecord.id}`;
-      const qrPayload = buildQrPayload(newRecord.id);
-
-      await setDoc(newRecord, {
-        baggageId,
-        flightId: flight,
-        baggageReference: reference,
-        status: 'Registered',
-        qrId: newRecord.id,
-        qrPayload,
-        registeredBy: auth.currentUser.uid,
-        createdAt: serverTimestamp(),
-      });
-
-      const newBaggage: BaggageRecord = {
-        id: newRecord.id,
-        baggageId,
-        flightId: flight,
-        baggageReference: reference,
-        status: 'Registered',
-        qrId: newRecord.id,
-        qrPayload,
-        registeredBy: auth.currentUser.uid,
-      };
-
-      setSelectedRecord(newBaggage);
-      setFlightNumber('');
-      setBaggageReference('');
-
-      Alert.alert(
-        'Baggage registered',
-        `${baggageId} has been registered and its QR code generated.`,
-      );
-    } catch (error) {
-      console.error('Error registering baggage:', error);
-
-      Alert.alert(
-        'Registration failed',
-        'The baggage could not be registered. Please try again.',
-      );
-    } finally {
-      setRegistering(false);
-    }
-  };
-
-  const getQRPayload = (record: BaggageRecord) => {
+  if (showRegisterForm) {
     return (
-      record.qrPayload ||
-      buildQrPayload(record.qrId || record.id)
+      <RegisterBaggageScreen onBack={() => setShowRegisterForm(false)} />
     );
-  };
-
-  const saveQRToPhotos = async () => {
-    if (!selectedRecord) {
-      Alert.alert(
-        'No baggage selected',
-        'Register or select a baggage record first.',
-      );
-      return;
-    }
-
-    if (!cacheDirectory) {
-      Alert.alert(
-        'Unable to save QR',
-        'The device cache directory is not available.',
-      );
-      return;
-    }
-
-    const permission = await MediaLibrary.requestPermissionsAsync();
-
-    if (!permission.granted) {
-      Alert.alert(
-        'Photos permission required',
-        'Please allow AeroSync to access Photos so the QR code can be saved.',
-      );
-      return;
-    }
-
-    const qrCode = qrCodeRef.current;
-
-    if (!qrCode) {
-      Alert.alert(
-        'QR not ready',
-        'Please wait a moment for the QR code to finish loading, then try again.',
-      );
-      return;
-    }
-
-    setSavingQR(true);
-
-    try {
-      qrCode.toDataURL(async (base64: string) => {
-        try {
-          const safeBaggageId = (
-            selectedRecord.baggageId || selectedRecord.id
-          ).replace(/[^a-zA-Z0-9_-]/g, '_');
-
-          const fileUri = `${cacheDirectory}${safeBaggageId}.png`;
-
-          await writeAsStringAsync(fileUri, base64, {
-            encoding: EncodingType.Base64,
-          });
-
-          await MediaLibrary.saveToLibraryAsync(fileUri);
-
-          Alert.alert(
-            'QR saved',
-            `${selectedRecord.baggageId || selectedRecord.id} QR code has been saved to Photos.`,
-          );
-        } catch (error) {
-          console.error('Error saving QR:', error);
-
-          Alert.alert(
-            'Save failed',
-            'The QR code could not be saved to Photos. Please try again.',
-          );
-        } finally {
-          setSavingQR(false);
-        }
-      });
-    } catch (error) {
-      console.error('Error generating QR image:', error);
-      setSavingQR(false);
-
-      Alert.alert(
-        'QR export failed',
-        'The QR code could not be prepared for saving.',
-      );
-    }
-  };
+  }
 
   return (
     <View style={styles.container}>
@@ -273,81 +82,15 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
 
         <Text style={styles.title}>Baggage Operations</Text>
         <Text style={styles.subtitle}>
-          Register baggage and generate a QR code for handling.
+          Register new baggage and view all registered bags.
         </Text>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Register Baggage</Text>
-
-          <Text style={styles.label}>Flight Number</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. KQ100"
-            placeholderTextColor="#8A94A6"
-            value={flightNumber}
-            onChangeText={setFlightNumber}
-            autoCapitalize="characters"
-          />
-
-          <Text style={styles.label}>Baggage Reference</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. BAG001"
-            placeholderTextColor="#8A94A6"
-            value={baggageReference}
-            onChangeText={setBaggageReference}
-            autoCapitalize="characters"
-          />
-
-          <TouchableOpacity
-            style={[styles.primaryButton, registering && { opacity: 0.6 }]}
-            onPress={registerBaggage}
-            disabled={registering}
-          >
-            <Text style={styles.primaryButtonText}>
-              {registering ? 'Registering…' : 'Register Baggage'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {selectedRecord ? (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Generated QR Code</Text>
-
-            <View style={styles.qrContainer}>
-              <QRCode
-                value={getQRPayload(selectedRecord)}
-                size={220}
-                backgroundColor="#FFFFFF"
-                color="#000000"
-                getRef={(ref) => {
-                  qrCodeRef.current = ref;
-                }}
-              />
-            </View>
-
-            <Text style={styles.baggageId}>
-              {selectedRecord.baggageId || selectedRecord.id}
-            </Text>
-
-            <Text style={styles.qrInstruction}>
-              Save this QR code to Photos for your handler demonstration.
-            </Text>
-
-            <TouchableOpacity
-              style={[
-                styles.secondaryButton,
-                savingQR && styles.disabledButton,
-              ]}
-              onPress={saveQRToPhotos}
-              disabled={savingQR}
-            >
-              <Text style={styles.secondaryButtonText}>
-                {savingQR ? 'Saving QR...' : 'Save QR to Photos'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
+        <TouchableOpacity
+          style={[styles.primaryButton, styles.registerButton]}
+          onPress={() => setShowRegisterForm(true)}
+        >
+          <Text style={styles.primaryButtonText}>＋ Register Baggage</Text>
+        </TouchableOpacity>
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Registered Baggage</Text>
@@ -358,15 +101,7 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
             </Text>
           ) : (
             records.map((record) => (
-              <TouchableOpacity
-                key={record.id}
-                style={[
-                  styles.record,
-                  selectedRecord?.id === record.id &&
-                    styles.selectedRecord,
-                ]}
-                onPress={() => setSelectedRecord(record)}
-              >
+              <View key={record.id} style={styles.record}>
                 <View style={styles.recordMain}>
                   <Text style={styles.recordBaggageId}>
                     {record.baggageId || record.id}
@@ -386,7 +121,7 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
                     {record.status || 'Registered'}
                   </Text>
                 </View>
-              </TouchableOpacity>
+              </View>
             ))
           )}
         </View>
@@ -444,23 +179,6 @@ const styles = StyleSheet.create({
     color: '#163B65',
     marginBottom: 16,
   },
-  label: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#3D4858',
-    marginBottom: 7,
-  },
-  input: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: '#D9DFE8',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    fontSize: 15,
-    color: '#1E293B',
-    marginBottom: 15,
-    backgroundColor: '#FAFBFD',
-  },
   primaryButton: {
     height: 48,
     borderRadius: 10,
@@ -469,48 +187,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 3,
   },
+  registerButton: {
+    marginBottom: 18,
+  },
   primaryButtonText: {
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '800',
-  },
-  qrContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 18,
-    borderRadius: 12,
-    marginBottom: 14,
-  },
-  baggageId: {
-    textAlign: 'center',
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#163B65',
-    marginBottom: 6,
-  },
-  qrInstruction: {
-    textAlign: 'center',
-    color: '#687386',
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 15,
-  },
-  secondaryButton: {
-    height: 48,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#2878C8',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  secondaryButtonText: {
-    color: '#2878C8',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  disabledButton: {
-    opacity: 0.5,
   },
   emptyText: {
     color: '#7A8494',
@@ -527,10 +210,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
-  },
-  selectedRecord: {
-    borderColor: '#2878C8',
-    backgroundColor: '#F5FAFF',
   },
   recordMain: {
     flex: 1,
