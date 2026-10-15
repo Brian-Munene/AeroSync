@@ -1,56 +1,88 @@
-# Welcome to your Expo app 👋
+# AeroSync
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A mobile app for airport ground crews: baggage registration and QR tracking, crew
+coordination, and delay-risk monitoring. Final-year project, BSc Computer Science,
+Strathmore University.
 
-## Get started
+Built with Expo (React Native, TypeScript, Expo Router) and Firebase (Auth, Firestore).
 
-1. Install dependencies
+## Features
 
-   ```bash
-   npm install
-   ```
+**Supervisor** (tabs: Operations, Baggage, Crew, Delay Risk, Account)
+- Approve new staff accounts
+- Register baggage and generate a QR code for each bag
+- View all registered baggage and its status
+- Assign handlers to flights and shifts
+- Monitor delay-risk indicators
 
-2. Start the app
+**Handler** (tabs: Home, My Tasks, Scan QR, Incidents, Account)
+- View assigned shifts, check in and out, update task progress
+- Scan baggage QR codes and record loading and offloading
+- Incident reporting is a placeholder ("coming soon")
 
-   ```bash
-   npx expo start
-   ```
+New accounts start as `pending` and can't access operational data until approved.
 
-In the output, you'll find options to open the app in a
+## Baggage workflow
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+1. **Register** (Baggage → *Register Baggage*): enter a flight number and baggage
+   reference. Flight numbers are validated and stored in one format (`kq-100` → `KQ100`).
+   After saving, the page shows the bag's details and QR code, with *Save QR to Photos*.
+2. **Scan** (Scan QR tab): scan with the camera or choose a QR image from Photos.
+   Only AeroSync codes (`AEROSYNC:BAGGAGE:<documentId>`) are accepted.
+3. **Update status**: only the next valid step is offered:
+   `Registered` → *Record Loading* → `Loading` → *Record Offloading* → `Offloaded`.
+   An optional *Active flight* field warns before handling a bag from another flight.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+Each step saves the status change and a timestamped history entry together in one
+Firestore transaction, so a bag can't be loaded twice or offloaded before loading,
+even if two handlers scan it at once.
 
-## Get a fresh project
+### Firestore data
 
-When you're ready, run:
+| Collection | Key fields |
+|---|---|
+| `BaggageRecords/{id}` | `baggageId` (`BAG-<id>`), `flightId`, `baggageReference`, `status`, `qrPayload`, `registeredBy`, `createdAt`, `lastHandlingAction`, `lastHandledBy`, `lastHandledAt` |
+| `BaggageRecords/{id}/handlingEvents/{id}` | `action`, `baggageId`, `flightId`, `handlerUid`, `timestamp` |
+| `users/{uid}` | `email`, `displayName`, `role` (`pending` / `handler` / `supervisor`), `requestedRole` |
+| `CrewAssignments/{id}` | `handlerUid`, `flightNumber`, `shiftDate`, `shiftTime`, `activity`, `status`, `attendanceStatus` |
+
+## Getting started
+
+Requires **Node.js 24.12+** (Firebase SDK) and **Expo Go** on your phone.
 
 ```bash
-npm run reset-project
+npm install
+npx expo start      # scan the QR in the terminal with Expo Go
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Use `npx expo start -c` after adding native packages. The first supervisor must be set
+in the Firebase console (`users/{uid}.role = "supervisor"`); after that, supervisors
+approve new accounts in the app.
 
-### Other setup steps
+## Scripts
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+| Command | Purpose |
+|---|---|
+| `npm start` | Start the Expo dev server |
+| `npm test` | Unit tests (Jest) |
+| `npm run typecheck` | TypeScript check |
+| `npm run lint` | Lint |
 
-## Learn more
+Unit tests in `src/features/baggage/__tests__` cover the handling rules, QR parsing and
+flight-number validation.
 
-To learn more about developing your project with Expo, look at the following resources:
+## Project structure
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```
+src/
+  app/                  Screens (Expo Router), e.g. baggage.tsx, scan-qr.tsx
+  components/           Shared UI, incl. register-baggage-screen.tsx, baggage-qr-card.tsx
+  features/baggage/     Baggage logic: handling rules, transaction, QR, validation, tests
+  lib/firebase.ts       Firebase setup
+data/, scripts/, ml/    Dataset, data pipeline (Python) and delay-risk model notebook
+```
 
-## Join the community
+## Known gaps
 
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- Firestore security rules are not yet in the repo (`firebase.json` points to a
+  missing `firestore.rules`), so access control is currently enforced in the app only.
