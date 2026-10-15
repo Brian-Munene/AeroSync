@@ -6,14 +6,13 @@ import {
 } from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import {
-  addDoc,
   collection,
   doc,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
-  updateDoc,
+  setDoc,
 } from 'firebase/firestore';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -26,6 +25,9 @@ import {
   View,
 } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
+
+import { buildQrPayload } from '@/features/baggage/qr';
+import { validateFlightNumber } from '@/features/baggage/validation';
 
 type BaggageRecord = {
   id: string;
@@ -43,8 +45,6 @@ type BaggageScreenProps = {
   onBack?: () => void;
 };
 
-const QR_PREFIX = 'AEROSYNC:BAGGAGE:';
-
 export default function BaggageScreen({ onBack }: BaggageScreenProps) {
   const [flightNumber, setFlightNumber] = useState('');
   const [baggageReference, setBaggageReference] = useState('');
@@ -52,6 +52,7 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
   const [selectedRecord, setSelectedRecord] =
     useState<BaggageRecord | null>(null);
   const [savingQR, setSavingQR] = useState(false);
+  const [registering, setRegistering] = useState(false);
 
   const qrCodeRef = useRef<{
     toDataURL: (callback: (data: string) => void) => void;
@@ -94,39 +95,50 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
   }, []);
 
   const registerBaggage = async () => {
-    const flight = flightNumber.trim().toUpperCase();
+    if (registering) {
+      return;
+    }
+
+    const flightCheck = validateFlightNumber(flightNumber);
     const reference = baggageReference.trim().toUpperCase();
 
-    if (!flight || !reference) {
+    if (!flightCheck.ok) {
+      Alert.alert('Invalid flight number', flightCheck.error);
+      return;
+    }
+
+    if (!reference) {
       Alert.alert(
         'Missing information',
-        'Please enter both the flight number and baggage reference.',
+        'Please enter the baggage reference.',
       );
       return;
     }
+
+    const flight = flightCheck.flight;
 
     if (!auth.currentUser) {
       Alert.alert('Not signed in', 'Please sign in again.');
       return;
     }
 
+    setRegistering(true);
+
     try {
-      const newRecord = await addDoc(collection(db, 'BaggageRecords'), {
+      // Generate the ID first so the whole record is saved in one write.
+      const newRecord = doc(collection(db, 'BaggageRecords'));
+      const baggageId = `BAG-${newRecord.id}`;
+      const qrPayload = buildQrPayload(newRecord.id);
+
+      await setDoc(newRecord, {
+        baggageId,
         flightId: flight,
         baggageReference: reference,
         status: 'Registered',
-        qrId: '',
-        registeredBy: auth.currentUser.uid,
-        createdAt: serverTimestamp(),
-      });
-
-      const baggageId = `BAG-${newRecord.id}`;
-      const qrPayload = `${QR_PREFIX}${newRecord.id}`;
-
-      await updateDoc(doc(db, 'BaggageRecords', newRecord.id), {
-        baggageId,
         qrId: newRecord.id,
         qrPayload,
+        registeredBy: auth.currentUser.uid,
+        createdAt: serverTimestamp(),
       });
 
       const newBaggage: BaggageRecord = {
@@ -155,13 +167,15 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
         'Registration failed',
         'The baggage could not be registered. Please try again.',
       );
+    } finally {
+      setRegistering(false);
     }
   };
 
   const getQRPayload = (record: BaggageRecord) => {
     return (
       record.qrPayload ||
-      `${QR_PREFIX}${record.qrId || record.id}`
+      buildQrPayload(record.qrId || record.id)
     );
   };
 
@@ -286,11 +300,12 @@ export default function BaggageScreen({ onBack }: BaggageScreenProps) {
           />
 
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[styles.primaryButton, registering && { opacity: 0.6 }]}
             onPress={registerBaggage}
+            disabled={registering}
           >
             <Text style={styles.primaryButtonText}>
-              Register Baggage
+              {registering ? 'Registering…' : 'Register Baggage'}
             </Text>
           </TouchableOpacity>
         </View>

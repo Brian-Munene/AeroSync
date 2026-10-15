@@ -5,15 +5,8 @@ import {
     useCameraPermissions,
 } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
-import {
-    addDoc,
-    collection,
-    doc,
-    getDoc,
-    serverTimestamp,
-    updateDoc,
-} from 'firebase/firestore';
-import { useState } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
+import { useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -21,9 +14,15 @@ import {
     ScrollView,
     StyleSheet,
     Text,
+    TextInput,
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { HandlingAction, nextAction } from '@/features/baggage/handling';
+import { HandlingError, recordHandlingEvent } from '@/features/baggage/handlingService';
+import { parseBaggageQr } from '@/features/baggage/qr';
+import { normalizeFlightNumber } from '@/features/baggage/validation';
 
 type BaggageRecord = {
   id: string;
@@ -35,13 +34,10 @@ type BaggageRecord = {
   status?: string;
 };
 
-type HandlingAction = 'Loading' | 'Offloading';
-
 const NAVY = '#163B65';
 const BLUE = '#2878C8';
 const BG = '#F4F6FA';
 const MUTED = '#64748B';
-const QR_PREFIX = 'AEROSYNC:BAGGAGE:';
 
 export default function ScanQRScreen() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -54,21 +50,26 @@ export default function ScanQRScreen() {
   const [message, setMessage] = useState('');
   const [baggage, setBaggage] = useState<BaggageRecord | null>(null);
 
+  // Flight the handler is working; bags for other flights need confirmation.
+  const [activeFlight, setActiveFlight] = useState('');
+  const [confirmWrongFlight, setConfirmWrongFlight] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [savedMessage, setSavedMessage] = useState('');
+
+  // Cameras report the same code many times per second; state updates are
+  // too slow to stop duplicates, so a ref locks scanning synchronously.
+  const scanLock = useRef(false);
+
   async function lookUpBaggageFromQR(data: string) {
     setLookingUp(true);
     setMessage('');
     setBaggage(null);
 
     try {
-      if (!data.startsWith(QR_PREFIX)) {
-        setMessage('This is not a valid AeroSync baggage QR code.');
-        return;
-      }
-
-      const documentId = data.slice(QR_PREFIX.length).trim();
+      const documentId = parseBaggageQr(data);
 
       if (!documentId) {
-        setMessage('The QR code does not contain a baggage ID.');
+        setMessage('This is not a valid AeroSync baggage QR code.');
         return;
       }
 
@@ -113,10 +114,11 @@ export default function ScanQRScreen() {
     data: string;
     type: string;
   }) {
-    if (!scanning || lookingUp || saving) {
+    if (scanLock.current || !scanning || lookingUp || saving) {
       return;
     }
 
+    scanLock.current = true;
     setScanning(false);
 
     await lookUpBaggageFromQR(data);
@@ -180,75 +182,35 @@ export default function ScanQRScreen() {
   }
 
   async function recordHandling(action: HandlingAction) {
-    if (!baggage || !auth.currentUser) {
-      Alert.alert(
-        'Unable to record event',
-        'Sign in and scan a valid baggage QR code first.'
-      );
+    if (!baggage || !auth.currentUser || saving) {
+      return;
+    }
+
+    if (isWrongFlight && !confirmWrongFlight) {
+      setConfirmWrongFlight(true);
       return;
     }
 
     setSaving(true);
+    setActionError('');
 
     try {
-      const eventCollection = collection(
-        db,
-        'BaggageRecords',
+      const newStatus = await recordHandlingEvent(
         baggage.id,
-        'handlingEvents'
+        action,
+        auth.currentUser.uid
       );
-
-      console.log('STEP 1: Creating handling event...', {
-        action,
-        baggageDocumentId: baggage.id,
-        baggageId: baggage.baggageId || baggage.id,
-        flightId: baggage.flightId || '',
-        handlerUid: auth.currentUser.uid,
-      });
-
-      await addDoc(eventCollection, {
-        action,
-        baggageId: baggage.baggageId || baggage.id,
-        flightId: baggage.flightId || '',
-        handlerUid: auth.currentUser.uid,
-        timestamp: serverTimestamp(),
-      });
-
-      console.log('STEP 1 SUCCESS: Handling event created.');
-
-      console.log('STEP 2: Updating baggage record...', {
-        baggageDocumentId: baggage.id,
-        newStatus: action === 'Loading' ? 'Loading' : 'Offloaded',
-      });
-
-      await updateDoc(doc(db, 'BaggageRecords', baggage.id), {
-        status: action === 'Loading' ? 'Loading' : 'Offloaded',
-        lastHandlingAction: action,
-        lastHandledBy: auth.currentUser.uid,
-        lastHandledAt: serverTimestamp(),
-      });
-
-      console.log('STEP 2 SUCCESS: Baggage record updated.');
 
       setBaggage((previous) =>
-        previous
-          ? {
-              ...previous,
-              status: action === 'Loading' ? 'Loading' : 'Offloaded',
-            }
-          : null
+        previous ? { ...previous, status: newStatus } : null
       );
-
-      Alert.alert(
-        'Handling event recorded',
-        `${action} was saved for ${baggage.baggageId || baggage.id}.`
-      );
+      setConfirmWrongFlight(false);
+      setSavedMessage(`${action} recorded. Status is now ${newStatus}.`);
     } catch (error) {
-      console.error('HANDLING ERROR:', error);
-
-      Alert.alert(
-        'Could not save event',
-        'Firebase rejected one of the handling operations. Check the terminal for STEP 1 or STEP 2.'
+      setActionError(
+        error instanceof HandlingError
+          ? error.message
+          : 'Could not save this action. Please try again.'
       );
     } finally {
       setSaving(false);
@@ -258,8 +220,17 @@ export default function ScanQRScreen() {
   function scanAgain() {
     setBaggage(null);
     setMessage('');
+    setActionError('');
+    setSavedMessage('');
+    setConfirmWrongFlight(false);
+    scanLock.current = false;
     setScanning(true);
   }
+
+  const flightFilter = normalizeFlightNumber(activeFlight);
+  const isWrongFlight =
+    Boolean(baggage) && flightFilter !== '' && baggage?.flightId !== flightFilter;
+  const allowedAction = baggage ? nextAction(baggage.status) : null;
 
   if (!permission) {
     return (
@@ -319,6 +290,23 @@ export default function ScanQRScreen() {
 
         {!baggage && (
           <>
+            <View style={styles.photoCard}>
+              <Text style={styles.photoTitle}>Active flight (optional)</Text>
+              <TextInput
+                style={styles.flightInput}
+                placeholder="e.g. KQ100"
+                placeholderTextColor="#8A94A6"
+                value={activeFlight}
+                onChangeText={setActiveFlight}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                maxLength={10}
+              />
+              <Text style={styles.photoDescription}>
+                Bags for a different flight will be flagged before saving.
+              </Text>
+            </View>
+
             <View style={styles.cameraCard}>
               <View style={styles.cameraFrame}>
                 {scanning ? (
@@ -478,41 +466,90 @@ export default function ScanQRScreen() {
             </Text>
 
             <Text style={styles.formHint}>
-              Select the action performed by the handler. Each action
-              creates a timestamped event in Firestore.
+              Only the next valid step is shown. Each action creates a
+              timestamped event in Firestore.
             </Text>
 
-            <Pressable
-              accessibilityRole="button"
-              disabled={saving}
-              onPress={() => recordHandling('Loading')}
-              style={[
-                styles.primaryButton,
-                saving && styles.disabledButton,
-              ]}
-            >
-              {saving ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Text style={styles.primaryButtonText}>
-                  Record Loading
+            {isWrongFlight && (
+              <View style={styles.warningCard}>
+                <Text style={styles.warningText}>
+                  Wrong flight: this bag is for {baggage.flightId || 'an unknown flight'},
+                  not {flightFilter}.
                 </Text>
-              )}
-            </Pressable>
+              </View>
+            )}
 
-            <Pressable
-              accessibilityRole="button"
-              disabled={saving}
-              onPress={() => recordHandling('Offloading')}
-              style={[
-                styles.offloadButton,
-                saving && styles.disabledButton,
-              ]}
-            >
-              <Text style={styles.offloadButtonText}>
-                Record Offloading
-              </Text>
-            </Pressable>
+            {baggage.status === 'Loading' && (
+              <View style={styles.infoCard}>
+                <Text style={styles.infoText}>
+                  Already loaded. Only offloading can be recorded.
+                </Text>
+              </View>
+            )}
+
+            {savedMessage !== '' && (
+              <View style={styles.infoCard}>
+                <Text style={styles.infoText}>✓ {savedMessage}</Text>
+              </View>
+            )}
+
+            {allowedAction ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={saving}
+                onPress={() => recordHandling(allowedAction)}
+                style={[
+                  allowedAction === 'Loading'
+                    ? styles.primaryButton
+                    : styles.offloadButton,
+                  isWrongFlight && confirmWrongFlight && styles.warningButton,
+                  saving && styles.disabledButton,
+                ]}
+              >
+                {saving ? (
+                  <ActivityIndicator
+                    color={allowedAction === 'Loading' ? '#FFFFFF' : NAVY}
+                  />
+                ) : (
+                  <Text
+                    style={
+                      isWrongFlight && confirmWrongFlight
+                        ? styles.primaryButtonText
+                        : allowedAction === 'Loading'
+                          ? styles.primaryButtonText
+                          : styles.offloadButtonText
+                    }
+                  >
+                    {isWrongFlight && confirmWrongFlight
+                      ? `Wrong flight. Record ${allowedAction} anyway`
+                      : `Record ${allowedAction}`}
+                  </Text>
+                )}
+              </Pressable>
+            ) : (
+              <View style={styles.infoCard}>
+                <Text style={styles.infoText}>
+                  {baggage.status === 'Offloaded'
+                    ? 'This bag has been offloaded. No further handling steps.'
+                    : `No handling action is available for status “${baggage.status ?? 'Unknown'}”.`}
+                </Text>
+              </View>
+            )}
+
+            {confirmWrongFlight && !saving && (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setConfirmWrongFlight(false)}
+              >
+                <Text style={styles.cancelText}>Cancel</Text>
+              </Pressable>
+            )}
+
+            {actionError !== '' && (
+              <View style={styles.errorCard}>
+                <Text style={styles.errorText}>{actionError}</Text>
+              </View>
+            )}
 
             <Pressable
               accessibilityRole="button"
@@ -806,6 +843,46 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  flightInput: {
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#172033',
+    backgroundColor: '#FFFFFF',
+  },
+  warningCard: {
+    backgroundColor: '#FFFAEB',
+    borderRadius: 10,
+    padding: 12,
+  },
+  warningText: {
+    color: '#B54708',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  warningButton: {
+    backgroundColor: '#B54708',
+    borderColor: '#B54708',
+  },
+  infoCard: {
+    backgroundColor: '#ECFDF3',
+    borderRadius: 10,
+    padding: 12,
+  },
+  infoText: {
+    color: '#067647',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  cancelText: {
+    color: MUTED,
+    fontWeight: '600',
+    textAlign: 'center',
+    paddingVertical: 4,
+  },
   disabledButton: {
     opacity: 0.6,
   },
