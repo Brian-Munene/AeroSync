@@ -1,180 +1,400 @@
-import { Image } from 'expo-image';
-import { SymbolView } from 'expo-symbols';
-import { Platform, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { auth, db } from '@/lib/firebase';
+import {
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
+import { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
-import { ExternalLink } from '@/components/external-link';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Collapsible } from '@/components/ui/collapsible';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+type Assignment = {
+  id: string;
+  flightNumber?: string;
+  shiftDate?: string;
+  shiftTime?: string;
+  activity?: string;
+  status?: string;
+};
 
-export default function TabTwoScreen() {
-  const safeAreaInsets = useSafeAreaInsets();
-  const insets = {
-    ...safeAreaInsets,
-    bottom: safeAreaInsets.bottom + BottomTabInset + Spacing.three,
-  };
-  const theme = useTheme();
+export default function MyTasksScreen() {
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
-  const contentPlatformStyle = Platform.select({
-    android: {
-      paddingTop: insets.top,
-      paddingLeft: insets.left,
-      paddingRight: insets.right,
-      paddingBottom: insets.bottom,
-    },
-    web: {
-      paddingTop: Spacing.six,
-      paddingBottom: Spacing.four,
-    },
-  });
+  useEffect(() => {
+    const user = auth.currentUser;
+
+    if (!user) {
+      setAssignments([]);
+      setLoading(false);
+      return;
+    }
+
+    const assignmentsQuery = query(
+      collection(db, 'CrewAssignments'),
+      where('handlerUid', '==', user.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      assignmentsQuery,
+      (snapshot) => {
+        const tasks: Assignment[] = snapshot.docs.map((item) => ({
+          id: item.id,
+          flightNumber: item.data().flightNumber,
+          shiftDate: item.data().shiftDate,
+          shiftTime: item.data().shiftTime,
+          activity: item.data().activity,
+          status: item.data().status ?? 'Assigned',
+        }));
+
+        setAssignments(tasks);
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Could not load tasks:', error);
+        setLoading(false);
+        Alert.alert(
+          'Unable to load tasks',
+          'Please check your connection and try again.'
+        );
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  async function updateTask(assignment: Assignment) {
+    const currentStatus = assignment.status ?? 'Assigned';
+
+    if (
+      currentStatus !== 'Assigned' &&
+      currentStatus !== 'In Progress'
+    ) {
+      return;
+    }
+
+    const nextStatus =
+      currentStatus === 'Assigned' ? 'In Progress' : 'Completed';
+
+    setUpdatingId(assignment.id);
+
+    try {
+      await updateDoc(doc(db, 'CrewAssignments', assignment.id), {
+        status: nextStatus,
+      });
+    } catch (error) {
+      console.error('Could not update task:', error);
+      Alert.alert(
+        'Update failed',
+        'Your task could not be updated. Please try again.'
+      );
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
+  const inProgress = assignments.filter(
+    (task) => task.status === 'In Progress'
+  ).length;
+
+  const completed = assignments.filter(
+    (task) => task.status === 'Completed'
+  ).length;
 
   return (
-    <ScrollView
-      style={[styles.scrollView, { backgroundColor: theme.background }]}
-      contentInset={insets}
-      contentContainerStyle={[styles.contentContainer, contentPlatformStyle]}>
-      <ThemedView style={styles.container}>
-        <ThemedView style={styles.titleContainer}>
-          <ThemedText type="subtitle">Explore</ThemedText>
-          <ThemedText style={styles.centerText} themeColor="textSecondary">
-            This starter app includes example{'\n'}code to help you get started.
-          </ThemedText>
+    <View style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <Text style={styles.eyebrow}>AEROSYNC · CREW WORKSPACE</Text>
+          <Text style={styles.title}>My Tasks</Text>
+          <Text style={styles.subtitle}>
+            View your assignments and track your task progress.
+          </Text>
+        </View>
 
-          <ExternalLink href="https://docs.expo.dev" asChild>
-            <Pressable style={({ pressed }) => pressed && styles.pressed}>
-              <ThemedView type="backgroundElement" style={styles.linkButton}>
-                <ThemedText type="link">Expo documentation</ThemedText>
-                <SymbolView
-                  tintColor={theme.text}
-                  name={{ ios: 'arrow.up.right.square', android: 'link', web: 'link' }}
-                  size={12}
-                />
-              </ThemedView>
-            </Pressable>
-          </ExternalLink>
-        </ThemedView>
+        <View style={styles.summary}>
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryNumber}>{assignments.length}</Text>
+            <Text style={styles.summaryLabel}>Total tasks</Text>
+          </View>
 
-        <ThemedView style={styles.sectionsWrapper}>
-          <Collapsible title="File-based routing">
-            <ThemedText type="small">
-              This app has two screens: <ThemedText type="code">src/app/index.tsx</ThemedText> and{' '}
-              <ThemedText type="code">src/app/explore.tsx</ThemedText>
-            </ThemedText>
-            <ThemedText type="small">
-              The layout file in <ThemedText type="code">src/app/_layout.tsx</ThemedText> sets up
-              the tab navigator.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/router/introduction">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryNumber}>{inProgress}</Text>
+            <Text style={styles.summaryLabel}>In progress</Text>
+          </View>
 
-          <Collapsible title="Android, iOS, and web support">
-            <ThemedView type="backgroundElement" style={styles.collapsibleContent}>
-              <ThemedText type="small">
-                You can open this project on Android, iOS, and the web. To open the web version,
-                press <ThemedText type="smallBold">w</ThemedText> in the terminal running this
-                project.
-              </ThemedText>
-              <Image
-                source={require('@/assets/images/tutorial-web.png')}
-                style={styles.imageTutorial}
-              />
-            </ThemedView>
-          </Collapsible>
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryNumber}>{completed}</Text>
+            <Text style={styles.summaryLabel}>Completed</Text>
+          </View>
+        </View>
 
-          <Collapsible title="Images">
-            <ThemedText type="small">
-              For static images, you can use the <ThemedText type="code">@2x</ThemedText> and{' '}
-              <ThemedText type="code">@3x</ThemedText> suffixes to provide files for different
-              screen densities.
-            </ThemedText>
-            <Image source={require('@/assets/images/react-logo.png')} style={styles.imageReact} />
-            <ExternalLink href="https://reactnative.dev/docs/images">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+        <Text style={styles.sectionTitle}>All assignments</Text>
 
-          <Collapsible title="Light and dark mode components">
-            <ThemedText type="small">
-              This template has light and dark mode support. The{' '}
-              <ThemedText type="code">useColorScheme()</ThemedText> hook lets you inspect what the
-              user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+        {loading ? (
+          <ActivityIndicator
+            size="large"
+            color="#163B65"
+            style={styles.loader}
+          />
+        ) : assignments.length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>No assignments yet</Text>
+            <Text style={styles.emptyText}>
+              Assignments from your supervisor will appear here.
+            </Text>
+          </View>
+        ) : (
+          assignments.map((assignment) => {
+            const status = assignment.status ?? 'Assigned';
+            const isCompleted = status === 'Completed';
+            const isUpdating = updatingId === assignment.id;
 
-          <Collapsible title="Animations">
-            <ThemedText type="small">
-              This template includes an example of an animated component. The{' '}
-              <ThemedText type="code">src/components/ui/collapsible.tsx</ThemedText> component uses
-              the powerful <ThemedText type="code">react-native-reanimated</ThemedText> library to
-              animate opening this hint.
-            </ThemedText>
-          </Collapsible>
-        </ThemedView>
-        {Platform.OS === 'web' && <WebBadge />}
-      </ThemedView>
-    </ScrollView>
+            return (
+              <View key={assignment.id} style={styles.taskCard}>
+                <View style={styles.cardTop}>
+                  <View style={styles.flightBlock}>
+                    <Text style={styles.flightLabel}>FLIGHT</Text>
+                    <Text style={styles.flightNumber}>
+                      {assignment.flightNumber || 'Not specified'}
+                    </Text>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      status === 'In Progress' && styles.progressBadge,
+                      isCompleted && styles.completedBadge,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusText,
+                        isCompleted && styles.completedText,
+                      ]}
+                    >
+                      {status}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.activity}>
+                  {assignment.activity || 'General handling'}
+                </Text>
+
+                <Text style={styles.detail}>
+                  Shift date: {assignment.shiftDate || 'Not specified'}
+                </Text>
+
+                <Text style={styles.detail}>
+                  Shift time: {assignment.shiftTime || 'Not specified'}
+                </Text>
+
+                {!isCompleted &&
+                  (status === 'Assigned' || status === 'In Progress') && (
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isUpdating}
+                      onPress={() => updateTask(assignment)}
+                      style={({ pressed }) => [
+                        styles.actionButton,
+                        pressed && styles.pressed,
+                        isUpdating && styles.disabledButton,
+                      ]}
+                    >
+                      {isUpdating ? (
+                        <ActivityIndicator color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.actionButtonText}>
+                          {status === 'Assigned'
+                            ? 'Start task'
+                            : 'Mark as completed'}
+                        </Text>
+                      )}
+                    </Pressable>
+                  )}
+              </View>
+            );
+          })
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  scrollView: {
+  screen: {
     flex: 1,
+    backgroundColor: '#F4F6FA',
   },
-  contentContainer: {
+  content: {
+    padding: 20,
+    paddingBottom: 40,
+  },
+  header: {
+    backgroundColor: '#163B65',
+    borderRadius: 18,
+    padding: 22,
+    marginBottom: 20,
+  },
+  eyebrow: {
+    color: '#BBD7F5',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginBottom: 10,
+  },
+  title: {
+    color: '#FFFFFF',
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  subtitle: {
+    color: '#E2EAF5',
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 8,
+  },
+  summary: {
     flexDirection: 'row',
-    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingVertical: 18,
+    marginBottom: 26,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
-  container: {
-    maxWidth: MaxContentWidth,
-    flexGrow: 1,
-  },
-  titleContainer: {
-    gap: Spacing.three,
+  summaryItem: {
+    flex: 1,
     alignItems: 'center',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.six,
   },
-  centerText: {
+  summaryNumber: {
+    color: '#163B65',
+    fontSize: 23,
+    fontWeight: '800',
+  },
+  summaryLabel: {
+    color: '#64748B',
+    fontSize: 12,
+    marginTop: 5,
     textAlign: 'center',
   },
-  pressed: {
-    opacity: 0.7,
+  sectionTitle: {
+    color: '#163B65',
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 14,
   },
-  linkButton: {
+  loader: {
+    marginTop: 30,
+  },
+  emptyCard: {
+    backgroundColor: '#FFFFFF',
+    padding: 24,
+    borderRadius: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  emptyTitle: {
+    color: '#163B65',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  emptyText: {
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 21,
+    marginTop: 8,
+  },
+  taskCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  cardTop: {
     flexDirection: 'row',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.five,
-    justifyContent: 'center',
-    gap: Spacing.one,
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  flightBlock: {
+    flex: 1,
+  },
+  flightLabel: {
+    color: '#64748B',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  flightNumber: {
+    color: '#163B65',
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  statusBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  progressBadge: {
+    backgroundColor: '#DBEAFE',
+  },
+  completedBadge: {
+    backgroundColor: '#DCFCE7',
+  },
+  statusText: {
+    color: '#475569',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  completedText: {
+    color: '#166534',
+  },
+  activity: {
+    color: '#334155',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 16,
+    marginBottom: 10,
+  },
+  detail: {
+    color: '#64748B',
+    fontSize: 13,
+    marginTop: 5,
+  },
+  actionButton: {
+    backgroundColor: '#2878C8',
+    borderRadius: 10,
+    paddingVertical: 13,
     alignItems: 'center',
+    marginTop: 18,
   },
-  sectionsWrapper: {
-    gap: Spacing.five,
-    paddingHorizontal: Spacing.four,
-    paddingTop: Spacing.three,
+  actionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
-  collapsibleContent: {
-    alignItems: 'center',
+  pressed: {
+    opacity: 0.8,
   },
-  imageTutorial: {
-    width: '100%',
-    aspectRatio: 296 / 171,
-    borderRadius: Spacing.three,
-    marginTop: Spacing.two,
-  },
-  imageReact: {
-    width: 100,
-    height: 100,
-    alignSelf: 'center',
+  disabledButton: {
+    opacity: 0.6,
   },
 });

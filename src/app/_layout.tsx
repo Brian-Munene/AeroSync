@@ -146,7 +146,7 @@ Sign out
 </View>
 );
 } else {
-content = <AppTabs />;
+content = <AppTabs role={role} />;
 }
 
 return (
